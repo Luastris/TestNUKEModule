@@ -1,2 +1,8 @@
 *.user
 build
+# Visual Studio / IDE + logs / OS (2026-07-11)
+.vs/
+*.suo
+*.log
+Thumbs.db
+.DS_Store

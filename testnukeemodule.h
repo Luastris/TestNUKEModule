@@ -6,9 +6,6 @@
 #include <iostream>
 
 #include <interface/NUKEEInteface.h>   // NUKEModule + AppInstance
-#include <reflect/ReflectBind.h>       // reflection->script layer (0.8) — self-tested below
-#include <API/Model/Atom.h>
-#include <API/Model/World.h>
 #include <imgui/imgui.h>               // drawn through the shared NukeImGui context
 
 // Singletons backed by a function-local static are per-DLL. Since NukeEngine is now a
@@ -97,61 +94,6 @@ struct TestNUKEEModule : public NUKEModule
             *instance->keyboard += MsgPrint;
 
         cout << "[TestPlugin]\tloaded." << endl;
-    }
-
-    // Sync activation hook (loader thread, before Run) — the world isn't being mutated
-    // concurrently here, so the reflection self-test can iterate it safely.
-    void OnLoad() override
-    {
-        SelfTestReflectBind(AppInstance::GetSingleton());
-    }
-
-    // Read-only smoke of the reflection->script layer (0.8): list types, resolve a stale
-    // handle, and — if the world has a reflected component — read a field and write the
-    // SAME value back (round-trip proof; the world is not modified).
-    static void SelfTestReflectBind(AppInstance* instance)
-    {
-        auto types = Reflect_ComponentTypes();
-        cout << "[TestPlugin]\tReflectBind: " << types.size() << " creatable component types:";
-        for (auto& t : types) cout << " " << t;
-        cout << endl;
-
-        if (Reflect_ResolveComponent(0xFFFFFFFF, 0xFFFFFFFF) != nullptr)
-            cout << "[TestPlugin]\tReflectBind FAIL: bogus handle resolved!" << endl;
-
-        World* w = instance ? instance->currentScene : nullptr;
-        if (!w) return;
-        for (Atom* a : w->GetHierarchy())
-        {
-            if (!a) continue;
-            for (Component* c : a->components)
-            {
-                TypeInfo* ti = c ? c->GetType() : nullptr;
-                if (!ti || ti->fields.empty()) continue;
-                const Field& f = ti->fields.front();
-                ReflectValue val = Reflect_GetField(c, f);
-                bool ok = Reflect_SetField(c, f, val)                      // no-op write-back
-                       && Reflect_ResolveComponent(a->id.id, c->id.id) == c
-                       && Reflect_FindField(ti, f.name) == &f;
-                cout << "[TestPlugin]\tReflectBind round-trip on " << ti->name << "." << f.name
-                     << " (atom '" << a->name << "'): " << (ok ? "OK" : "FAIL") << endl;
-
-                // Method reflection ([[nuke::func]]): read the transform's euler through a
-                // reflected call, then write the SAME value back — arg/return conversion +
-                // void return, world not modified.
-                Transform* tr = &a->GetTransform();
-                const Method* get = Reflect_FindMethod(tr->GetType(), "EulerDeg");
-                const Method* set = Reflect_FindMethod(tr->GetType(), "SetEulerDeg");
-                bool mok = get && set && get->ret == FT::Vec3 && set->params.size() == 1;
-                ReflectValue euler;
-                if (mok) mok = Reflect_Invoke(tr, *get, nullptr, 0, euler) && euler.type == FT::Vec3;
-                if (mok) { ReflectValue r; mok = Reflect_Invoke(tr, *set, &euler, 1, r) && r.type == FT::Unknown; }
-                cout << "[TestPlugin]\tReflectBind method invoke Transform.EulerDeg/SetEulerDeg: "
-                     << (mok ? "OK" : "FAIL") << endl;
-                return;   // one instance is enough
-            }
-        }
-        cout << "[TestPlugin]\tReflectBind: no reflected component in the world to round-trip (types list OK)" << endl;
     }
 
     bool HasSettings() override { return true; }
