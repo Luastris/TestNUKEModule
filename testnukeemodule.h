@@ -6,6 +6,10 @@
 #include <iostream>
 
 #include <interface/NUKEEInteface.h>   // NUKEModule + AppInstance
+#include <interface/Importers.h>       // SAMPLE: register a plugin asset importer + ImporterDefer
+#include <API/Model/Texture.h>         // the native asset the sample importer produces
+#include <API/Model/resdb.h>           // ResDB register the produced asset
+#include <fstream>
 #include <imgui/imgui.h>               // drawn through the shared NukeImGui context
 
 // Singletons backed by a function-local static are per-DLL. Since NukeEngine is now a
@@ -43,6 +47,48 @@ void MsgPrint(unsigned char c, int x, int y) {
 void Message() { cout << "[TestPlugin] menu -> Message clicked" << endl; }
 
 static AppInstance* g_app = nullptr;   // host, for the persisted window-open flag
+
+// --- SAMPLE plugin importer (interface/Importers.h) -------------------------------------------
+// Demonstrates adding support for a format the engine core can't read. This toy importer turns a
+// ".democolor" text file (contents: "R G B", each 0-255) into a native 128x128 solid-colour .nutex.
+// Real importers put their decoder here (EPS rasteriser, PSD reader, a studio's mesh format, ...).
+// AssImporter::ImportAny dispatches here for the registered extension; the browser Import dialog +
+// Explorer drag&drop both funnel through it. Runs on the import worker — do file IO here, and route
+// every ResDB write through AssImporter::Reg (the engine applies it on the main thread).
+static void RegisterDemoImporter()
+{
+    AssetImporter imp;
+    imp.label = "Demo Solid Colour";
+    imp.exts  = { ".democolor" };
+    imp.import = [](const std::string& srcPath, const std::string& destDir) -> bool
+    {
+        int r = 255, g = 0, b = 255;
+        { std::ifstream f(srcPath); if (f) f >> r >> g >> b; }
+        auto cl = [](int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); };
+        r = cl(r); g = cl(g); b = cl(b);
+
+        Texture* tex = new Texture();                 // build a native engine asset
+        tex->guid = ResDB::NewGuid();
+        tex->width = tex->height = 128; tex->format = Texture::FMT_RGBA8; tex->mipCount = 1;
+        tex->pixels.resize((size_t)128 * 128 * 4);
+        for (size_t i = 0; i < tex->pixels.size(); i += 4)
+        { tex->pixels[i] = (unsigned char)r; tex->pixels[i+1] = (unsigned char)g; tex->pixels[i+2] = (unsigned char)b; tex->pixels[i+3] = 255; }
+
+        std::string base = srcPath;                   // stem (no dir, no ext)
+        size_t slash = base.find_last_of("/\\"); if (slash != std::string::npos) base = base.substr(slash + 1);
+        size_t dot = base.find_last_of('.');      if (dot   != std::string::npos) base = base.substr(0, dot);
+        std::string out = destDir + std::string("/") + base + ".nutex";
+        if (!tex->SaveToFile(out)) { delete tex; return false; }
+
+        ImporterDefer([tex, out] {                  // ResDB isn't thread-safe -> main thread
+            ResDB::getSingleton()->RegisterTexture(tex);
+            ResDB::getSingleton()->SetAssetPath(tex->guid, out);
+        });
+        std::cout << "[TestPlugin]\timported '" << srcPath << "' -> " << out << std::endl;
+        return true;
+    };
+    RegisterImporter(imp);
+}
 
 void TestWindow() {
     if (!g_app) return;
@@ -92,6 +138,8 @@ struct TestNUKEEModule : public NUKEModule
         // Hook the host keyboard (press 'm').
         if (instance->keyboard)
             *instance->keyboard += MsgPrint;
+
+        RegisterDemoImporter();   // SAMPLE: a plugin asset importer (.democolor -> .nutex)
 
         cout << "[TestPlugin]\tloaded." << endl;
     }
